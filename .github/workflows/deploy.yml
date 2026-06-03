@@ -1,0 +1,203 @@
+name: Full CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: terraform-state
+  cancel-in-progress: true
+
+jobs:
+  terraform-build-deploy:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: .
+
+    steps:
+      ##################################################
+      # Checkout
+      ##################################################
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      ##################################################
+      # Setup Terraform
+      ##################################################
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      ##################################################
+      # Configure AWS Credentials
+      ##################################################
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      ##################################################
+      # Create SSH Keys
+      ##################################################
+
+#      - name: Create SSH Key
+#        run: |
+#          mkdir -p ~/.ssh
+
+#          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/nodeapp
+#          chmod 600 ~/.ssh/nodeapp
+
+#          ssh-keygen -y -f ~/.ssh/nodeapp > ~/.ssh/nodeapp.pub
+
+      ##################################################
+      # Terraform Init
+      ##################################################
+
+      - name: Terraform Init
+        working-directory: ec2
+        run: terraform init
+
+      ##################################################
+      # Terraform Validate
+      ##################################################
+
+      - name: Terraform Validate
+        working-directory: ec2
+        run: terraform validate
+
+      ##################################################
+      # Terraform Plan
+      ##################################################
+
+      - name: Terraform Plan
+        working-directory: ec2
+        run: |
+          terraform plan \
+            -var="key_name=saishma-ec2-key"
+
+      ##################################################
+      # Terraform Apply
+      ##################################################
+
+      - name: Terraform Apply
+        working-directory: ec2
+        run: |
+          terraform apply -auto-approve \
+            -var="key_name=saishma-ec2-key"
+
+      ##################################################
+      # Get EC2 IP
+      ##################################################
+
+      - name: Get EC2 Public IP
+        id: terraform_output
+        working-directory: ec2
+        run: |
+          echo "EC2_IP=$(terraform output -raw public_ip)" >> $GITHUB_ENV
+
+      ##################################################
+      # Wait for EC2
+      ##################################################
+
+      - name: Wait for EC2 Startup
+        run: sleep 60
+
+      ##################################################
+      # Setup Node
+      ##################################################
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      ##################################################
+      # Install Dependencies
+      ##################################################
+
+      - name: Install Dependencies
+        working-directory: app
+        run: npm install
+
+      ##################################################
+      # Run Tests
+      ##################################################
+
+      - name: Run Tests
+        working-directory: app
+        run: npm test
+
+      ##################################################
+      # Install Snyk
+      ##################################################
+
+      - name: Install Snyk
+        run: npm install -g snyk
+
+      ##################################################
+      # Authenticate Snyk
+      ##################################################
+
+      - name: Snyk Auth
+        run: snyk auth ${{ secrets.SNYK_TOKEN }}
+
+      ##################################################
+      # Run Security Scan
+      ##################################################
+
+      - name: Snyk Scan
+        working-directory: app
+        run: snyk test --severity-threshold=medium
+
+      ##################################################
+      # Archive App
+      ##################################################
+
+      - name: Package App
+        run: |
+          tar --exclude=node_modules -czf app.tar.gz app/
+
+      ##################################################
+      # Copy App to EC2
+      ##################################################
+
+      - name: Copy App to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ env.EC2_IP }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "app.tar.gz"
+          target: "/home/ec2-user"
+
+      ##################################################
+      # Deploy Application
+      ##################################################
+
+      - name: Deploy App
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ env.EC2_IP }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ec2-user
+
+            tar -xzf app.tar.gz
+
+            cd app
+
+            npm install --production
+
+            pm2 delete nodeapp || true
+
+            pm2 start app.js --name nodeapp
+
+            pm2 save

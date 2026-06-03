@@ -1,0 +1,17 @@
+{
+  "name": "nodejs-ec2-demo",
+  "version": "1.0.0",
+  "description": "Simple Node.js EC2 deployment demo",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "express": "4.17.0"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0",
+    "supertest": "^6.3.3"
+  }
+}

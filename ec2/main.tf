@@ -74,6 +74,7 @@ resource "aws_instance" "ec2" {
   }
   user_data = <<-EOF
               #!/bin/bash
+              #hbh
 
               dnf update -y
 
